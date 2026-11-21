@@ -1,0 +1,20 @@
+{
+  "title": "Hexagonal Fermat Bounds: Exact Rational Verification and Benchmarks",
+  "upload_type": "software",
+  "license": "MIT",
+  "creators": [
+    {
+      "name": "Vieira, Paulo",
+      "affiliation": "Independent researcher, Belo Horizonte, Brazil",
+      "orcid": "0009-0003-7982-0836"
+    }
+  ],
+  "description": "Exact rational verification and certified numerical benchmarks (pure Python, zero dependencies) for the paper 'Bounds for Fermat quotients via hexagonal interpolation determinants'.",
+  "keywords": [
+    "Fermat quotients",
+    "interpolation determinants",
+    "p-adic valuations",
+    "odd perfect numbers",
+    "exact rational arithmetic"
+  ]
+}
