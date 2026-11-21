@@ -1,44 +1,51 @@
 #!/usr/bin/env python3
-"""
-Companion script for:
-"Bounds for Fermat quotients via hexagonal interpolation determinants"
-Author: Paulo Vieira
+"""Companion code for Paulo Vieira's hexagonal Fermat bounds.
 
-Pure Python 3 (standard library only, exact rational arithmetic via fractions.Fraction).
-Performs:
-  1. Exact rational certification of all numerical inequalities in Section 4.
-  2. Explicit comparison table: Elementary vs. Yamada (2010) vs. Giraudin (2026) vs. Theorem 1.1.
-  3. Selective weight B(p_j, p_i) comparison for Odd Perfect Numbers (Theorem 5.1).
+Requires Python 3.9+; standard library only.
+1. Checks the numerical inequalities used in Section 4.
+2. Compares upper bounds for the base-2 Fermat numerator valuation.
+3. Illustrates the weight B(p_j, p_i) from Section 5.
+
+All numerical checks and table roundings use integers or Fraction.
 """
 
 from fractions import Fraction
-import math
+from functools import lru_cache
+from math import ceil, floor
+
+F = Fraction
+MR_BASES = (2, 3, 5, 7, 11, 13, 17, 19, 23, 29, 31, 37)
+MR_LIMIT = 318_665_857_834_031_151_167_461
 
 
-# ==============================================================================
-# Deterministic Primality Check (Miller-Rabin exact for all n < 3.3 * 10^24)
-# ==============================================================================
+def require(condition: bool, message: str) -> None:
+    """Check a condition even when Python is run with -O."""
+    if not condition:
+        raise AssertionError(message)
+
 
 def is_prime(n: int) -> bool:
+    """Deterministic Miller–Rabin for integers below MR_LIMIT."""
     if n < 2:
         return False
-    small_primes = (2, 3, 5, 7, 11, 13, 17, 19, 23, 29, 31, 37)
-    for p in small_primes:
-        if n == p:
-            return True
+    if n >= MR_LIMIT:
+        raise ValueError(f"Outside the deterministic range: {n}")
+    for p in MR_BASES:
         if n % p == 0:
-            return False
+            return n == p
+
     d = n - 1
     s = 0
     while d % 2 == 0:
         d //= 2
         s += 1
-    for a in (2, 3, 5, 7, 11, 13, 17, 19, 23, 29, 31, 37):
+
+    for a in MR_BASES:
         x = pow(a, d, n)
-        if x == 1 or x == n - 1:
+        if x in (1, n - 1):
             continue
         for _ in range(s - 1):
-            x = (x * x) % n
+            x = pow(x, 2, n)
             if x == n - 1:
                 break
         else:
@@ -47,207 +54,256 @@ def is_prime(n: int) -> bool:
 
 
 def next_prime_pm1_mod24(start: int) -> int:
-    """Return the smallest prime p >= start such that p == +-1 (mod 24)."""
-    p = start if start % 2 == 1 else start + 1
+    """Return the smallest prime p >= start with p == +/-1 (mod 24)."""
+    p = max(3, start)
+    p += (p % 2 == 0)
     while True:
         if p % 24 in (1, 23) and is_prime(p):
             return p
         p += 2
 
 
-# ==============================================================================
-# PART 1: Exact Rational Certification of Section 4 (Zero Floating-Point!)
-# ==============================================================================
+def distinct_prime_factors(n: int) -> list[int]:
+    factors = []
+    q = 2
+    while q * q <= n:
+        if n % q == 0:
+            factors.append(q)
+            while n % q == 0:
+                n //= q
+        q = 3 if q == 2 else q + 2
+    if n > 1:
+        factors.append(n)
+    return factors
 
-def log_bounds_series(z: Fraction, m: int = 12) -> tuple[Fraction, Fraction]:
-    """
-    Exact rational lower and upper bounds for log(z) (z >= 1) using Section 4.2:
-    z = 2^h * r with 1 <= r < 2, and t = (w - 1)/(w + 1) <= 1/3.
-    """
-    assert z >= 1
+
+def multiplicative_order(a: int, p: int) -> int:
+    if not is_prime(p) or a % p == 0:
+        raise ValueError("Expected a prime modulus and a nonzero residue.")
+    order = p - 1
+    for q in distinct_prime_factors(order):
+        while order % q == 0 and pow(a, order // q, p) == 1:
+            order //= q
+    return order
+
+
+@lru_cache(maxsize=None)
+def log_bounds(z: Fraction, m: int = 12) -> tuple[Fraction, Fraction]:
+    """Enclose log(z) by rational bounds from the series in Section 4."""
+    r = F(z)
+    if r < 1 or m < 1:
+        raise ValueError("Expected z >= 1 and m >= 1.")
+
     h = 0
-    r = z
     while r >= 2:
         r /= 2
         h += 1
 
-    def unit_interval_bounds(w: Fraction) -> tuple[Fraction, Fraction]:
-        if w == 1:
-            return Fraction(0), Fraction(0)
+    def reduced_bounds(w: Fraction) -> tuple[Fraction, Fraction]:
         t = (w - 1) / (w + 1)
         t2 = t * t
         power = t
-        partial = Fraction(0)
+        partial = F(0)
         for j in range(m):
             partial += power / (2 * j + 1)
             power *= t2
         low = 2 * partial
-        rem = (2 * power) / ((2 * m + 1) * (1 - t2))
-        return low, low + rem
+        tail = 2 * power / ((2 * m + 1) * (1 - t2))
+        return low, low + tail
 
-    low2, high2 = unit_interval_bounds(Fraction(2))
-    low_r, high_r = unit_interval_bounds(r)
-    return h * low2 + low_r, h * high2 + high_r
+    lo2, hi2 = reduced_bounds(F(2))
+    lor, hir = reduced_bounds(r)
+    return h * lo2 + lor, h * hi2 + hir
 
 
 def exp_3_halves_upper() -> Fraction:
-    """Exact rational upper bound for e^(3/2) / 2 from Section 4.2 (degree 12 + tail)."""
-    x = Fraction(3, 2)
-    fact = 1
-    power = Fraction(1)
-    total = Fraction(0)
-    for k in range(13):
-        if k > 0:
-            fact *= k
-            power *= x
-        total += power / fact
-    fact13 = fact * 13
-    tail = (power * x) / (fact13 * (1 - Fraction(3, 28)))
-    return (total + tail) / 2
+    """Upper bound for exp(3/2)/2 by a degree-12 sum and a tail."""
+    term = total = F(1)
+    for k in range(1, 13):
+        term *= F(3, 2 * k)
+        total += term
+    first_omitted = term * F(3, 26)
+    return (total + first_omitted / (1 - F(3, 28))) / 2
+
+
+def certify_case(
+    *, C, cutoff, g_min, log_p_min, log_p_cap, A_min, s_min,
+    sqrt_bound, G_max, power_cap, b_ratio, y_min,
+    log_y_min, log_cheb_cap, cheb_cap, log_cost_cap, cost_cap,
+) -> Fraction:
+    """Check one parameter regime, including its quadratic refinement."""
+    require(cutoff >= 8, "Cutoff outside the monotonicity range")
+    lo, hi = log_bounds(F(cutoff))
+    require(log_p_min < lo and hi < log_p_cap, f"C={C}: cutoff log")
+    require(F(cutoff - 1, 2) <= g_min <= cutoff // 2, f"C={C}: g lower bound")
+
+    # The proof uses monotonicity of (t-1)/log(t)^2 for t >= 8.
+    require(F(cutoff - 1, 2) * F("0.76") / log_p_cap**2 > A_min,
+            f"C={C}: A_g lower bound")
+    require(floor(F(4 * C * A_min, 9)) >= s_min, f"C={C}: s lower bound")
+
+    first = F("1.000001")
+    require(1 + F(1, 3 * s_min * g_min) < first**2,
+            f"C={C}: first square root")
+    require((2 + F(1, g_min)) / (3 * s_min) < sqrt_bound**2,
+            f"C={C}: second square root")
+    G_squared = F(36, C) * (1 + F(1, s_min)) * (first + sqrt_bound)**2
+    require(G_squared < G_max**2 and G_max < 2, f"C={C}: bound for G")
+
+    _, log2_hi = log_bounds(F(2))
+    power_lo, _ = log_bounds(power_cap)
+    require(2 * log2_hi / (s_min + 1) < power_lo, f"C={C}: power of two")
+    require(power_cap * F("2.241") * G_max / 4 < b_ratio, f"C={C}: b_0/w")
+
+    # For w >= C, log(b_ratio*w)/w is decreasing if log(b_ratio*C) > 1.
+    cheb_lo, cheb_hi = log_bounds(b_ratio * C)
+    require(1 < cheb_lo and cheb_hi < log_cheb_cap, f"C={C}: Chebyshev log")
+    y_lo, _ = log_bounds(F(y_min))
+    require(log_y_min < y_lo, f"C={C}: lower bound for log(y)")
+    require(log_cheb_cap / (C * log_y_min) < cheb_cap, f"C={C}: Chebyshev cost")
+
+    _, cost_hi = log_bounds(F(27 * (s_min + 1)))
+    require(cost_hi < log_cost_cap, f"C={C}: combinatorial log")
+    require(log_cost_cap / (s_min * log_p_min) < cost_cap,
+            f"C={C}: combinatorial cost")
+
+    total = G_max + cheb_cap + cost_cap
+    require(total < F(119, 64), f"C={C}: final numerical criterion")
+    return total
 
 
 def certify_section_4() -> None:
-    print("=" * 88)
-    print("1. EXACT RATIONAL CERTIFICATION OF SECTION 4 INEQUALITIES")
-    print("=" * 88)
+    print("1. EXACT RATIONAL CHECKS FOR SECTION 4")
+    log2_lo, log2_hi = log_bounds(F(2))
+    log3_lo, log3_hi = log_bounds(F(3))
+    require(F("0.693147") < log2_lo <= log2_hi < F("0.693148"), "log(2)")
+    require(F("1.098612") < log3_lo <= log3_hi < F("1.098613"), "log(3)")
+    require(log2_lo * log3_lo > F("0.76"), "Lower bound for log(2) log(3)")
+    require(13 * log2_hi * log3_hi < F(99, 10), "Base-2 decimal coefficient")
+    require(exp_3_halves_upper() < F("2.241"), "exp(3/2)/2")
 
-    log2_lo, log2_hi = log_bounds_series(Fraction(2), m=12)
-    log3_lo, log3_hi = log_bounds_series(Fraction(3), m=12)
-    assert Fraction(693147, 1000000) < log2_lo and log2_hi < Fraction(693148, 1000000)
-    assert Fraction(1098612, 1000000) < log3_lo and log3_hi < Fraction(1098613, 1000000)
-    assert log2_lo * log3_lo > Fraction(76, 100)
-    assert 13 * log2_hi * log3_hi < Fraction(99, 10)
-
-    e32_half_hi = exp_3_halves_upper()
-    assert e32_half_hi < Fraction(2241, 1000)
-
-    # Case C = 15 (including quadratic refinement g >= (p-1)/2 for p > 2^15 => p >= 32771)
-    log_p_gen_lo, log_p_gen_hi = log_bounds_series(Fraction(32771), m=12)
-    assert Fraction(1039, 100) < log_p_gen_lo and log_p_gen_hi < Fraction(104, 10)
-    A_g_gen_lo = Fraction(16384) * (log2_lo * log3_lo) / (log_p_gen_hi ** 2)
-    assert A_g_gen_lo > 113
-    s_gen = (20 * 113) // 3
-    assert s_gen >= 750
-
-    paren1 = Fraction(1000001, 1000000) + Fraction(2982, 100000)
-    assert Fraction(1) + Fraction(1, 3 * 750 * 16384) < Fraction(1000001, 1000000) ** 2
-    assert Fraction(2 + Fraction(1, 16384), 3 * 750) < Fraction(2982, 100000) ** 2
-    lhs_sq_gen = Fraction(36, 15) * Fraction(751, 750) * (paren1 ** 2)
-    assert lhs_sq_gen < Fraction(1598, 1000) ** 2
-
-    log_1002_lo, _ = log_bounds_series(Fraction(1002, 1000), m=12)
-    assert (2 * log2_hi) / 751 < log_1002_lo
-    b0_over_w_gen = Fraction(1002, 1000) * Fraction(2241, 1000) * Fraction(1598, 1000) / 4
-    assert b0_over_w_gen < Fraction(9, 10)
-
-    _, log_13_5_hi = log_bounds_series(Fraction(27, 2), m=12)
-    assert log_13_5_hi < Fraction(2603, 1000)
-    cheb_gen = log_13_5_hi / (15 * log2_lo)
-    assert cheb_gen < Fraction(251, 1000)
-
-    _, log_N_gen_hi = log_bounds_series(Fraction(27 * 751), m=12)
-    assert log_N_gen_hi < 10
-    had_gen = Fraction(10) / (750 * Fraction(1039, 100))
-    assert had_gen < Fraction(2, 1000)
-
-    total_gen = Fraction(1598, 1000) + Fraction(251, 1000) + Fraction(2, 1000)
-    assert total_gen == Fraction(1851, 1000) < Fraction(119, 64)
-
-    # Case C = 13 (base 2, p > 3^13 = 1594323 => p >= 1594325, g >= 797162)
-    log_p_b2_lo, log_p_b2_hi = log_bounds_series(Fraction(1594325), m=12)
-    assert Fraction(1428, 100) < log_p_b2_lo and log_p_b2_hi < Fraction(143, 10)
-    A_g_b2_lo = Fraction(797161) * (log2_lo * log3_lo) / (log_p_b2_hi ** 2)
-    assert A_g_b2_lo > 2950
-
-    paren2 = Fraction(1000001, 1000000) + Fraction(627, 100000)
-    assert Fraction(1) + Fraction(1, 3 * 17000 * 797161) < Fraction(1000001, 1000000) ** 2
-    assert Fraction(2 + Fraction(1, 797161), 3 * 17000) < Fraction(627, 100000) ** 2
-    lhs_sq_b2 = Fraction(36, 13) * Fraction(17001, 17000) * (paren2 ** 2)
-    assert lhs_sq_b2 < Fraction(1676, 1000) ** 2
-
-    log_1001_lo, _ = log_bounds_series(Fraction(1001, 1000), m=12)
-    assert (2 * log2_hi) / 17001 < log_1001_lo
-    b0_over_w_b2 = Fraction(1001, 1000) * Fraction(2241, 1000) * Fraction(1676, 1000) / 4
-    assert b0_over_w_b2 < 1
-
-    _, log_13_hi = log_bounds_series(Fraction(13), m=12)
-    assert log_13_hi < Fraction(2565, 1000)
-    cheb_b2 = log_13_hi / (13 * log3_lo)
-    assert cheb_b2 < Fraction(180, 1000)
-
-    _, log_N_b2_hi = log_bounds_series(Fraction(27 * 17001), m=12)
-    assert log_N_b2_hi < 14
-    had_b2 = Fraction(14) / (17000 * Fraction(1428, 100))
-    assert had_b2 < Fraction(1, 1000)
-
-    total_b2 = Fraction(1676, 1000) + Fraction(180, 1000) + Fraction(1, 1000)
-    assert total_b2 == Fraction(1857, 1000) < Fraction(119, 64)
-
-    print("[OK] All rational inequalities in Section 4 verified with exact Fractions:")
-    print(f"     General / Quadratic case (C = 15): {float(total_gen):.3f} = 1851/1000 < 119/64 = {119/64:.6f}")
-    print(f"     Base-2 / Quadratic case  (C = 13): {float(total_b2):.3f} = 1857/1000 < 119/64 = {119/64:.6f}")
+    general = certify_case(
+        C=15, cutoff=2**15, g_min=16_384,
+        log_p_min=F("10.39"), log_p_cap=F("10.4"),
+        A_min=113, s_min=750, sqrt_bound=F("0.02982"),
+        G_max=F("1.598"), power_cap=F("1.002"), b_ratio=F("0.9"),
+        y_min=2, log_y_min=F("0.693147"), log_cheb_cap=F("2.603"),
+        cheb_cap=F("0.251"), log_cost_cap=F(10), cost_cap=F("0.002"),
+    )
+    base_two = certify_case(
+        C=13, cutoff=3**13, g_min=797_161,
+        log_p_min=F("14.28"), log_p_cap=F("14.3"),
+        A_min=2950, s_min=17_000, sqrt_bound=F("0.00627"),
+        G_max=F("1.676"), power_cap=F("1.001"), b_ratio=F(1),
+        y_min=3, log_y_min=F("1.098612"), log_cheb_cap=F("2.565"),
+        cheb_cap=F("0.180"), log_cost_cap=F(14), cost_cap=F("0.001"),
+    )
+    require(general == F(1851, 1000), "Unexpected general total")
+    require(base_two == F(1857, 1000), "Unexpected base-2 total")
+    print(f"   [OK] General and quadratic cases: {general} < 119/64")
+    print(f"   [OK] Base 2 and quadratic cases:  {base_two} < 119/64")
     print()
 
 
-# ==============================================================================
-# PART 2: Benchmark Table — Elementary vs. Yamada vs. Giraudin vs. Theorem 1.1
-# ==============================================================================
+def rounded_log_ratio(
+    scale: Fraction, numerator: tuple[int, ...], p: int,
+    denominator_power: int, rounding,
+) -> int:
+    """Round scale * product(log(numerator)) / log(p)^denominator_power.
+
+    Return an integer only when both rational endpoints give that integer.
+    """
+    for m in (12, 24, 48, 96):
+        plo, phi = log_bounds(F(p), m)
+        low = scale / phi**denominator_power
+        high = scale / plo**denominator_power
+        for a in numerator:
+            alo, ahi = log_bounds(F(a), m)
+            low *= alo
+            high *= ahi
+        rounded_low, rounded_high = rounding(low), rounding(high)
+        if rounded_low == rounded_high:
+            return rounded_low
+
+    raise ArithmeticError(
+        f"Rounding not certified: scale={scale}, numerator={numerator}, "
+        f"p={p}, denominator power={denominator_power}"
+    )
+
+
+def elementary_bound(x: int, p: int, exponent: int) -> int:
+    return rounded_log_ratio(F(exponent), (x,), p, 1, ceil) - 1
+
+
+def determinant_bound(
+    coefficient: Fraction, a: int, b: int, p: int, additive: int,
+) -> int:
+    return rounded_log_ratio(coefficient * (p - 1), (a, b), p, 2, floor) + additive
+
 
 def benchmark_bounds() -> None:
-    print("=" * 88)
-    print("2. UPPER BOUNDS FOR v_p(2^(p-1) - 1) ON PRIMES p == +-1 (mod 24)")
-    print("=" * 88)
-    header = (
-        f"{'Prime p':>17} | {'Elementary':>12} | {'Yamada (283)':>14} | "
-        f"{'Giraudin (69)':>14} | {'Thm 1.1 (13)':>13} | {'Thm 1.1 (13/2)':>14}"
-    )
-    print(header)
-    print("-" * 88)
+    print("2. BASE-2 UPPER BOUNDS (CERTIFIED INTEGER ROUNDING)")
+    print(f"{'Prime p':>17} | {'Elementary':>14} | {'Yamada':>14} | "
+          f"{'N. Giraudin':>14} | {'Hex. 13':>14} | {'Hex. 13/2':>14}")
+    print("-" * 102)
 
-    targets = [3**13 + 1, 10**7, 10**9, 10**12]
-    primes_24 = [next_prime_pm1_mod24(t) for t in targets]
-
-    for p in primes_24:
-        assert is_prime(p) and p % 24 in (1, 23)
-        elem = math.ceil((p - 1) * math.log(2) / math.log(p)) - 1
-        # In base 2 with y = 3: log(y)*log(xy) = log(3)*log(6)
-        yamada = math.floor(283 * (p - 1) * math.log(3) * math.log(6) / (math.log(p) ** 2)) + 4
-        giraudin = math.floor(69 * (p - 1) * math.log(3) * math.log(6) / (math.log(p) ** 2)) + 4
-        thm_13 = math.floor(13 * (p - 1) * math.log(2) * math.log(3) / (math.log(p) ** 2)) + 2
-        thm_half = math.floor(6.5 * (p - 1) * math.log(2) * math.log(3) / (math.log(p) ** 2)) + 2
-        print(
-            f"{p:>17,d} | {elem:>12,d} | {yamada:>14,d} | "
-            f"{giraudin:>14,d} | {thm_13:>13,d} | {thm_half:>14,d}"
+    for start in (3**13 + 1, 10**7, 10**9, 10**12):
+        p = next_prime_pm1_mod24(start)
+        require(all(pow(a, (p - 1) // 2, p) == 1 for a in (2, 3)),
+                f"Quadratic hypotheses failed at p={p}")
+        values = (
+            elementary_bound(2, p, p - 1),
+            determinant_bound(F(283), 3, 6, p, 4),
+            determinant_bound(F(69), 3, 6, p, 4),
+            determinant_bound(F(13), 2, 3, p, 2),
+            determinant_bound(F(13, 2), 2, 3, p, 2),
         )
+        print(f"{p:>17,d} | " + " | ".join(f"{value:>14,d}" for value in values))
     print()
 
 
-# ==============================================================================
-# PART 3: Odd Perfect Number Selective Weight Demo (Theorem 5.1)
-# ==============================================================================
-
 def benchmark_opn_edge() -> None:
-    print("=" * 88)
-    print("3. SELECTIVE WEIGHT B(p_j, p_i) IN THEOREM 5.1 (p_i == 7 mod 8, j != *)")
-    print("=" * 88)
+    print("3. ILLUSTRATIVE WEIGHT FOR THE ODD PERFECT NUMBER APPLICATION")
     p_i = 1_000_039
-    p_j = 10_000_019
-    assert is_prime(p_i) and is_prime(p_j) and p_i % 8 == 7
-    f_ij = (p_i - 1) // 2  # Odd order dividing p_i - 1 => automatic QR by Euler!
+    require(is_prime(p_i) and p_i % 8 == 7, "Invalid target prime")
 
-    elem_ord = math.ceil(f_ij * math.log(p_j) / math.log(p_i)) - 1
-    yamada_edge = math.floor(283 * (p_i - 1) * math.log(2) * math.log(2 * p_j) / (math.log(p_i) ** 2)) + 4
-    giraudin_edge = math.floor(69 * (p_i - 1) * math.log(2) * math.log(2 * p_j) / (math.log(p_i) ** 2)) + 4
-    hex_15 = math.floor(15 * (p_i - 1) * math.log(2) * math.log(p_j) / (math.log(p_i) ** 2)) + 2
-    hex_half = math.floor(7.5 * (p_i - 1) * math.log(2) * math.log(p_j) / (math.log(p_i) ** 2)) + 2
+    # Keep the original starting point; select the first prime with
+    # a nontrivial odd order, as required for a non-Eulerian source.
+    for p_j in range(10_000_019, 10_002_020, 2):
+        if not is_prime(p_j):
+            continue
+        # Since p_i == 7 (mod 8), (p_i-1)/2 is odd.
+        if pow(p_j, (p_i - 1) // 2, p_i) != 1:
+            continue
+        f_ij = multiplicative_order(p_j, p_i)
+        if f_ij > 1 and f_ij % 2 == 1:
+            break
+    else:
+        raise RuntimeError("No suitable illustrative source prime found.")
 
-    print(f"Active pair (p_j -> p_i) = ({p_j:,d} -> {p_i:,d}), p_i == 7 (mod 8), f_{{i,j}} = (p_i - 1)/2:")
-    print(f"  - Elementary order bound           : {elem_ord:>12,d}")
-    print(f"  - Yamada (2010) [283, log(2*p_j)]  : {yamada_edge:>12,d}")
-    print(f"  - Giraudin (2026) [69, log(2*p_j)] : {giraudin_edge:>12,d}")
-    print(f"  - Hexagonal bound (kappa = 15)     : {hex_15:>12,d}")
-    print(f"  - Euler-QR bound  (kappa = 15/2)   : {hex_half:>12,d}  <-- automatic for j != *!")
-    print("=" * 88)
+    require(pow(2, (p_i - 1) // 2, p_i) == 1, "Auxiliary base is not a square")
+    require(pow(p_j, f_ij, p_i) == 1, "Invalid order")
+    require(all(pow(p_j, f_ij // q, p_i) != 1
+                for q in distinct_prime_factors(f_ij)), "Order is not minimal")
+
+    elem = elementary_bound(p_j, p_i, f_ij)
+    yamada = determinant_bound(F(283), 2, 2 * p_j, p_i, 4)
+    giraudin = determinant_bound(F(69), 2, 2 * p_j, p_i, 4)
+    hex_general = determinant_bound(F(15), 2, p_j, p_i, 2)
+    hex_quadratic = determinant_bound(F(15, 2), 2, p_j, p_i, 2)
+    weight = min(elem, hex_quadratic)
+
+    print(f"   Source -> target: {p_j:,d} -> {p_i:,d}; actual order: {f_ij:,d}")
+    print("   This is an admissible pair, not a claim about an existing odd perfect number.")
+    for label, value in (
+        ("Elementary bound using the actual order", elem),
+        ("Yamada (283)", yamada),
+        ("Niedbala Giraudin (69)", giraudin),
+        ("Hexagonal bound (15)", hex_general),
+        ("Hexagonal quadratic bound (15/2)", hex_quadratic),
+        ("Weight B = min(elementary, quadratic)", weight),
+    ):
+        print(f"   {label:<44} {value:>12,d}")
 
 
 if __name__ == "__main__":
