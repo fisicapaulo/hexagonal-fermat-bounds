@@ -1,5 +1,7 @@
 # Hexagonal Fermat Bounds — Exact Rational Verification & Benchmarks
 
+[![DOI](https://zenodo.org/badge/1466177217.svg)](https://doi.org/10.5281/zenodo.24412370)
+
 Companion code for the paper:
 
 > **Paulo Vieira**, *"Bounds for Fermat quotients via hexagonal interpolation determinants"* (2026).
